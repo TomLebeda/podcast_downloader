@@ -1,25 +1,16 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"github.com/mmcdole/gofeed"
 	"github.com/schollz/progressbar/v3"
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
-)
-
-const (
-	CLEAR  = "\u001b[0m"
-	WHITE  = "\u001b[37;5;97m"
-	YELLOW = "\u001B[37;5;93m"
-	RED    = "\u001b[31m"
-	GREEN  = "\u001B[37;5;92m"
 )
 
 type PodcastItem struct {
@@ -38,11 +29,10 @@ var (
 )
 
 func main() {
-	args := os.Args[1:]
-	setup(args)
+	setup()
 
 	links := loadLinks(srcFileName)
-	memory = loadMemoryFile() // TODO - first run without exists memory file (I want create it instead fail)
+	loadMemoryFile()
 
 	podcastItems := getItems(links)
 
@@ -51,56 +41,36 @@ func main() {
 		downloaded += downloadItem(item, index, len(podcastItems))
 	}
 
-	updateMemoryFile(memory)
-
 	if downloaded == 0 {
-		fmt.Println(WHITE + "No files downloaded." + CLEAR)
+		fmt.Println("No files downloaded.")
 	} else {
-		fmt.Println(GREEN + "Successfully downloaded " + strconv.Itoa(downloaded) + " files." + CLEAR)
+		fmt.Println("Successfully downloaded " + strconv.Itoa(downloaded) + " files.")
 	}
 }
 
-func setup(args []string) {
-	if len(args) != 0 {
-		// TODO - use standard aproach: https://gobyexample.com/command-line-flags
-		// use input arguments
-		if len(args) == 3 {
-			srcFileName = args[0]
-			memFileName = args[1]
-			dumpPath = args[2]
-		} else if len(args) == 4 {
-			srcFileName = args[0]
-			memFileName = args[1]
-			dumpPath = args[2]
-			if args[3] == "-d" || args[3] == "--dry" {
-				dryRun = true
-			} else {
-				fmt.Println(YELLOW + "Fourth argument is invalid, expected \"-d\" or \"dry\". I will ignore it." + CLEAR)
-			}
-		} else {
-			fmt.Println(RED + "Invalid number of arguments (" + strconv.Itoa(len(args)) + "). Expected 3 or 4 or none." + CLEAR)
-			os.Exit(1)
-		}
-	}
+func setup() {
+	flag.StringVar(&srcFileName, "src", "podcast_sources.txt", "Specify the file with podcast sources.")
+	flag.StringVar(&memFileName, "mem", "podcasts_memory.txt", "Specify the memory file with already downloaded podcast links.")
+	flag.StringVar(&dumpPath, "dump", os.Args[0]+"/", "Location (relative path) where to store downloaded files.")
+	flag.BoolVar(&dryRun, "dry", false, "Dry run will add links to memory file without actually downloading any files.")
+	flag.Parse()
 }
 
-func loadMemoryFile() map[string]struct{} {
+func loadMemoryFile() {
 	memRaw, err := os.ReadFile(memFileName)
 	if err != nil {
-		fmt.Println(RED + "File with previously downloaded links not found." + CLEAR)
-		os.Exit(1)
+		fmt.Println("File with previously downloaded links not found. Creating a new one.")
+		os.Create(memFileName)
 	}
-	downloadedLinksMap := make(map[string]struct{})
 	for _, line := range strings.Split(string(memRaw), "\n") {
-		downloadedLinksMap[strings.TrimSpace(line)] = struct{}{}
+		memory[strings.TrimSpace(line)] = struct{}{}
 	}
-	return downloadedLinksMap
 }
 
 func loadLinks(srcFName string) []string {
 	srcs, err := os.ReadFile(srcFName)
 	if err != nil {
-		fmt.Println(RED + "Unable to load file with sources, unexpected error: " + err.Error() + CLEAR)
+		fmt.Println("Unable to load file with sources, unexpected error: " + err.Error())
 		os.Exit(1)
 	}
 	links := strings.Split(strings.TrimSpace(string(srcs)), "\n")
@@ -110,12 +80,11 @@ func loadLinks(srcFName string) []string {
 func getItems(links []string) []PodcastItem {
 	parser := gofeed.NewParser()
 	items := make([]PodcastItem, 0)
-	rx := regexp.MustCompile("(<*>*:*\"*/*\\\\*\\|*\\?*\\**)+") // TODO - regex is owerkill? Use simple strings.ReplaceAll is readable?
 
 	for _, link := range links {
 		raw, err := parser.ParseURL(strings.TrimSpace(link))
 		if err != nil {
-			fmt.Println(YELLOW + "Unable to parse url:" + link + ". Error:" + err.Error() + CLEAR)
+			fmt.Println("Unable to parse url:" + link + ". Error:" + err.Error())
 			continue
 		}
 		for _, item := range raw.Items {
@@ -125,7 +94,7 @@ func getItems(links []string) []PodcastItem {
 				}
 				p := PodcastItem{
 					origin: raw.Title,
-					title:  rx.ReplaceAllString(item.Title, ""), // filter out forbidden characters for filenames
+					title:  purify(item.Title),
 					date:   item.PublishedParsed,
 					link:   item.Enclosures[0].URL,
 				}
@@ -133,21 +102,34 @@ func getItems(links []string) []PodcastItem {
 			}
 		}
 	}
-
 	return items
 }
 
-func updateMemoryFile(downloadedLinksMap map[string]struct{}) {
+func purify(s string) string {
+	s = strings.ReplaceAll(s, ">", "")
+	s = strings.ReplaceAll(s, "<", "")
+	s = strings.ReplaceAll(s, ":", "")
+	s = strings.ReplaceAll(s, "\"", "")
+	s = strings.ReplaceAll(s, "/", "")
+	s = strings.ReplaceAll(s, "\\", "")
+	s = strings.ReplaceAll(s, "|", "")
+	s = strings.ReplaceAll(s, "?", "")
+	s = strings.ReplaceAll(s, "*", "")
+	return s
+}
+
+func updateMemoryFile() {
 	memS := ""
-	for s := range downloadedLinksMap {
-		memS += s + "\n"
+	for s := range memory {
+		memS += strings.TrimSpace(s) + "\n"
 	}
 	err := os.WriteFile(memFileName, []byte(memS), 'w')
 	if err != nil {
-		fmt.Println(RED + "Unable to update memory file. ERROR: " + err.Error() + CLEAR)
+		fmt.Println("Unable to update memory file. ERROR: " + err.Error())
 	}
 }
 
+// downloads given item and returns number of successfully downloaded files (1 or 0)
 func downloadItem(item PodcastItem, index int, total int) int {
 	if _, ok := memory[item.link]; ok {
 		// link is already in memory => skip, don't download anything
@@ -156,59 +138,55 @@ func downloadItem(item PodcastItem, index int, total int) int {
 	if dryRun {
 		// dry-run => skip, don't download anything, link mark as downloaded
 		memory[item.link] = struct{}{} // add new item to memory
+		updateMemoryFile()             // update the memory file
 		return 0
 	}
 
-	// get the data
+	// get the data from the URL
 	resp, err := http.Get(item.link)
 	if err != nil {
-		fmt.Println(YELLOW + "Failed to download file from URL:" + item.link + "ERROR:" + err.Error() + CLEAR)
+		fmt.Println("Failed to download file from URL:" + item.link + "ERROR:" + err.Error())
 		return 0
 	}
 	defer resp.Body.Close()
 
 	// create a new file
-	rx := regexp.MustCompile("(<*>*:*\"*/*\\\\*\\|*\\?*\\**)+")
-	fileName := item.date.Format("2006-01-02") + " - " + item.origin + " - " + rx.ReplaceAllString(item.title, "") + ".mp3"
-
-	pathName := filepath.Join(dumpPath, fileName)
-	partName := filepath.Join(dumpPath, fileName+".part")
-
-	i, done := download(partName, resp, index, total)
-	if done {
-		return i
-	}
-
-	err = os.Rename(partName, pathName) // remove the .part when file is completed
+	fileName := item.date.Format("2006-01-02") + " - " + item.origin + " - " + item.title + ".mp3"
+	file, err := os.Create(fileName + ".part")
 	if err != nil {
-		fmt.Println("Unable to rename downloaded file: " + err.Error() + CLEAR)
-		return 1
+		fmt.Println("Failed to create a new file: " + err.Error())
 	}
-	memory[item.link] = struct{}{} // add new item to memory
-	// TODO - flush after each succesfull download (user can break program in progress ie. Ctrl+C)
-	return 1
-}
 
-func download(partName string, resp *http.Response, index int, total int) (int, bool) {
-	out, err := os.Create(partName)
-	if err != nil {
-		fmt.Println(YELLOW + "Failed to create a new file, ERROR: " + err.Error() + CLEAR)
-		return 0, true
-	}
-	defer out.Close()
-
+	// create a progressbar
 	pbar := progressbar.NewOptions(int(resp.ContentLength),
 		progressbar.OptionEnableColorCodes(true),
 		progressbar.OptionSetDescription("downloading "+strconv.Itoa(index+1)+"/"+strconv.Itoa(total)),
 		progressbar.OptionClearOnFinish(),
 		progressbar.OptionSetWidth(20))
-	defer pbar.Clear()
 
-	// dump the data into the file
-	_, err = io.Copy(io.MultiWriter(out, pbar), resp.Body)
+	// copy the data into the new file
+	_, err = io.Copy(io.MultiWriter(file, pbar), resp.Body)
 	if err != nil {
-		fmt.Println("Failed to copy data to file, ERROR: " + err.Error() + CLEAR)
-		return 0, true
+		// copying failed => report, close file, clear progress bar, return 0 (without updating memory or removing .part)
+		fmt.Println("Failed to copy data to file:", err)
+		pbar.Clear()
+		file.Close()
+		return 0
 	}
-	return 0, false
+
+	// file was successfully completed => close the file, clear the progress bar, remove .part, update memory and return 1
+	pbar.Clear()
+	file.Close()
+
+	// rename the downloaded file
+	err = os.Rename(fileName+".part", fileName)
+	if err != nil {
+		fmt.Println("Failed to rename downloaded file:", err)
+	}
+
+	// update the memory
+	memory[item.link] = struct{}{}
+	updateMemoryFile()
+
+	return 1
 }
