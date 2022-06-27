@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -152,7 +153,10 @@ func downloadItem(item PodcastItem, index int, total int) int {
 
 	// create a new file
 	fileName := item.date.Format("2006-01-02") + " - " + item.origin + " - " + item.title + ".mp3"
-	file, err := os.Create(fileName + ".part")
+	partFileName := filepath.Join(dumpPath, fileName+".part")
+	finalFileName := filepath.Join(dumpPath, fileName)
+
+	file, err := os.Create(partFileName)
 	if err != nil {
 		fmt.Println("Failed to create a new file: " + err.Error())
 	}
@@ -179,7 +183,7 @@ func downloadItem(item PodcastItem, index int, total int) int {
 	file.Close()
 
 	// rename the downloaded file
-	err = os.Rename(fileName+".part", fileName)
+	err = os.Rename(partFileName, finalFileName)
 	if err != nil {
 		fmt.Println("Failed to rename downloaded file:", err)
 	}
