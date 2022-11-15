@@ -3,9 +3,12 @@ package main
 import (
 	"flag"
 	"fmt"
+	md "github.com/JohannesKaufmann/html-to-markdown"
+	"github.com/bogem/id3v2"
 	"github.com/mmcdole/gofeed"
 	"github.com/schollz/progressbar/v3"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,10 +18,12 @@ import (
 )
 
 type PodcastItem struct {
-	origin string
-	title  string
-	date   *time.Time
-	link   string
+	origin      string
+	title       string
+	description string
+	fileName    string
+	date        *time.Time
+	link        string
 }
 
 var (
@@ -94,10 +99,12 @@ func getItems(links []string) []PodcastItem {
 					continue
 				}
 				p := PodcastItem{
-					origin: raw.Title,
-					title:  purify(item.Title),
-					date:   item.PublishedParsed,
-					link:   item.Enclosures[0].URL,
+					origin:      raw.Title,
+					title:       item.Title,
+					description: item.Description,
+					fileName:    purify(item.Title),
+					date:        item.PublishedParsed,
+					link:        item.Enclosures[0].URL,
 				}
 				items = append(items, p)
 			}
@@ -152,7 +159,7 @@ func downloadItem(item PodcastItem, index int, total int) int {
 	defer resp.Body.Close()
 
 	// create a new file
-	fileName := item.date.Format("2006-01-02") + " - " + item.origin + " - " + item.title + ".mp3"
+	fileName := item.date.Format("2006-01-02") + " - " + item.origin + " - " + item.fileName + ".mp3"
 	partFileName := filepath.Join(dumpPath, fileName+".part")
 	finalFileName := filepath.Join(dumpPath, fileName)
 
@@ -188,9 +195,44 @@ func downloadItem(item PodcastItem, index int, total int) int {
 		fmt.Println("Failed to rename downloaded file:", err)
 	}
 
+	// set tags from rss item
+	setMetadata(finalFileName, item)
+
 	// update the memory
 	memory[item.link] = struct{}{}
 	updateMemoryFile()
 
 	return 1
+}
+
+func setMetadata(fileName string, item PodcastItem) {
+	// Open file and parse tag in it.
+	tag, err := id3v2.Open(fileName, id3v2.Options{Parse: true})
+	if err != nil {
+		log.Fatal("Error while opening mp3 file: ", err)
+	}
+	defer tag.Close()
+
+	// Set simple text frames.
+	tag.SetDefaultEncoding(id3v2.EncodingUTF8)
+	tag.SetAlbum(item.origin)
+	tag.SetTitle(item.title)
+
+	// Set comment frame.
+	converter := md.NewConverter("", true, nil)
+	markdown, err := converter.ConvertString(item.description)
+	if err != nil {
+		log.Fatal("Error while read podcast description: ", err)
+	}
+	comment := id3v2.CommentFrame{
+		Encoding:    id3v2.EncodingUTF8,
+		Language:    "cze",
+		Description: markdown,
+	}
+	tag.AddCommentFrame(comment)
+
+	// Write tag to file.
+	if err = tag.Save(); err != nil {
+		log.Fatal("Error while saving a tag: ", err)
+	}
 }
